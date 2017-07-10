@@ -1,1 +1,1 @@
-# quora-question-dup
+# question-answer
