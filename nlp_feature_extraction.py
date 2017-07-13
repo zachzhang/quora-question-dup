@@ -95,10 +95,59 @@ def nlp_features(df):
     df.drop(["id", "qid1", "qid2", "question1", "question2", "is_duplicate"], axis=1, inplace=True)
     return df
 
+def get_embedding():
+    
+    embeddings_index = {}
+    
+    f = open(EMBEDDING_FILE,encoding="utf-8")
+    for line in f:
+        values = line.split()
+        word = values[0]
+        if len(values) == EMBEDDING_DIM + 1 and word in top_words:
+            coefs = np.asarray(values[1:], dtype="float32")
+            embeddings_index[word] = coefs
+            f.close()
+            return embeddings_index
+
+def 
+
 if __name__ =='__main__':
+
 
     print("Extracting features for train:")
     train_df = pd.read_csv("data/train.csv")
+    
+    all_questions = pd.Series(train["question1"].tolist() + train["question2"].tolist()).unique()
+    vectorizer = CountVectorizer(lowercase=False, token_pattern="\S+", min_df=MIN_WORD_OCCURRENCE)
+    vectorizer.fit(all_questions)
+    top_words = set(vectorizer.vocabulary_.keys())
+    top_words.add(REPLACE_WORD)
+
+    embeddings_index = get_embedding()
+    top_words = embeddings_index.keys()
+
+    tokenizer = Tokenizer(filters="")
+        tokenizer.fit_on_texts(np.append(q1s_train, q2s_train))
+            word_index = tokenizer.word_index
+
+
+
+    nb_words = len(word_index) + 1
+    
+    embedding_matrix = np.zeros((nb_words, EMBEDDING_DIM))
+    
+    for word, i in word_index.items():
+    
+        embedding_vector = embeddings_index.get(word)
+        
+        if embedding_vector is not None:
+        
+            embedding_matrix[i] = embedding_vector
+
+
+    np.save('embedding.npy',embedding_matrix)
+    pickle.dump(tokenizer,open('tok.p','wb'))
+
     train_df = extract_features(train_df)
     train_df.drop(["id", "qid1", "qid2", "question1", "question2", "is_duplicate"], axis=1, inplace=True)
     train_df.to_csv("data/nlp_features_train.csv", index=False)

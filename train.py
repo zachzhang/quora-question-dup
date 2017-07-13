@@ -2,7 +2,7 @@
 
 import sys  
 
-
+import time
 import re
 import pickle
 import pandas as pd
@@ -20,6 +20,13 @@ from keras.callbacks import EarlyStopping, ModelCheckpoint
 from keras.layers.noise import GaussianNoise
 from nltk.stem.wordnet import WordNetLemmatizer
 from nltk.corpus import stopwords
+from sklearn.metrics import euclidean_distances
+from pyemd import emd
+import nltk
+
+from scipy import sparse
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
 
 
 np.random.seed(0)
@@ -117,6 +124,28 @@ def extract_features(df):
     return q1s, q2s, features
 
 
+#too slow :(
+def word_mover_dist(df, embedding_matrix, embedding_idx):
+
+    vect = CountVectorizer(lowercase=False, token_pattern="\S+", min_df=MIN_WORD_OCCURRENCE)
+    vect.vocabulary_ = embedding_idx
+
+    D = euclidean_distances(embedding_matrix)
+
+    q1 = vect.transform( df['question1'] ).toarray().astype(np.float)
+    q2 = vect.transform( df['question2'] ).toarray().astype(np.float)
+
+    q1 /= np.expand_dims(q1.sum(axis=1),1)
+    q2 /= np.expand_dims(q2.sum(axis=1),1)
+
+    word_move = np.zeros(df.shape[0])
+
+    for i in range(df.shape[0]):
+        word_move[i] = emd(q1[i].flatten(), q2[i].flatten(), D)
+        print(df.loc[i,'question1'],df.loc[i,'question2'] ,df.loc[i,'is_duplicate'] , word_move[i])
+
+    return word_move
+
 
 def question_model(nb_words,embedding_matrix , n_dense_inputs):
 
@@ -164,15 +193,65 @@ def question_model(nb_words,embedding_matrix , n_dense_inputs):
     return model
 
 
+def pos_features(df):
+
+    def _pos(x):
+
+        tags = nltk.pos_tag(nltk.word_tokenize(x))
+        tags = [ tag[1] for tag in tags]
+        return ' '.join(tags)
+
+    pos_q1 = df['question1'].apply(_pos)
+    pos_q2 = df['question2'].apply(_pos)
+
+    vect = CountVectorizer(max_features=50)
+    vect.fit(list(df['question1']) + list(df['question2']))
+
+    q1 = vect.transform(pos_q1).toarray()
+    q2 = vect.transform(pos_q2).toarray()
+    
+    print(q1.shape)
+
+    #pos_dist =  np.sqrt(np.sum((q1 - q2)**2 ,axis=1 ))
+    pos_dist = np.abs(q1 - q2)
+
+    return pos_dist
+
+
+def LSA_dist(df):
+
+    vect = TfidfVectorizer(lowercase=False, token_pattern="\S+", min_df=MIN_WORD_OCCURRENCE , stop_words='english')
+    vect.fit(list(df['question1']) + list(df['question2']))
+
+    #Q = vect.transform(list(df['question1']) + list(df['question2']))
+    q1 = vect.transform(list(df['question1']))
+    q2 = vect.transform(list(df['question2']))
+
+    svd = TruncatedSVD(40)
+    svd.fit( sparse.vstack([q1,q2]))
+
+    z1 = svd.transform(q1)
+    z2 = svd.transform(q2)
+
+    return np.abs(z1 - z2)
+
+    #return np.sqrt(np.sum((z1 - z2)**2 ,axis=1 ))
+
+
 if __name__=='__main__':
    
 
     train = pd.read_csv("data/train.csv")
     test = pd.read_csv("data/test.csv")
-    
+   
+    #print(word_mover_dist(train.iloc[0:20], embedding_matrix, tok.word_index))
+
     train["question1"] = train["question1"].fillna("").apply(preprocess)
     train["question2"] = train["question2"].fillna("").apply(preprocess)
     
+    #print(np.expand_dims(LSA_dist(train) , 1).shape)
+    #quit()
+
     print("Creating the vocabulary of words occurred more than", MIN_WORD_OCCURRENCE)
     all_questions = pd.Series(train["question1"].tolist() + train["question2"].tolist()).unique()
     vectorizer = CountVectorizer(lowercase=False, token_pattern="\S+", min_df=MIN_WORD_OCCURRENCE)
@@ -186,10 +265,11 @@ if __name__=='__main__':
     
     print("Train questions are being prepared for LSTM...")
     q1s_train, q2s_train, train_q_features = extract_features(train)
-    
+
     tokenizer = Tokenizer(filters="")
     tokenizer.fit_on_texts(np.append(q1s_train, q2s_train))
     word_index = tokenizer.word_index
+    
     
     data_1 = pad_sequences(tokenizer.texts_to_sequences(q1s_train), maxlen=MAX_SEQUENCE_LENGTH)
     data_2 = pad_sequences(tokenizer.texts_to_sequences(q2s_train), maxlen=MAX_SEQUENCE_LENGTH)
@@ -201,69 +281,65 @@ if __name__=='__main__':
     for word, i in word_index.items():
         embedding_vector = embeddings_index.get(word)
 
-    if embedding_vector is not None:
-        embedding_matrix[i] = embedding_vector
+        if embedding_vector is not None:
+            embedding_matrix[i] = embedding_vector
     
     
+    #print(word_mover_dist(train.iloc[0:20], embedding_matrix, embedding_indexs))
+    #quit()
+
     np.save('embedding.npy',embedding_matrix)
     pickle.dump(tokenizer,open('tok.p','wb'))
-    
+
+    #pos = np.expand_dims(pos_features(train) , 1)
+    pos = pos_features(train)
+    #lsa = np.expand_dims(LSA_dist(train) , 1)
+    lsa = LSA_dist(train)
+
     print("Train features are being merged with NLP and Non-NLP features...")
     train_nlp_features = pd.read_csv("data/nlp_features_train.csv",encoding='utf-8')
-    #train_non_nlp_features = pd.read_csv("data/non_nlp_features_no_graph_train.csv",encoding='utf-8')
-    #features_train = np.hstack((train_q_features, train_nlp_features, train_non_nlp_features))
-    features_train = np.hstack((train_q_features, train_nlp_features))
-    
-    print("Same steps are being applied for test...")
-    test["question1"] = test["question1"].fillna("").apply(preprocess)
-    test["question2"] = test["question2"].fillna("").apply(preprocess)
-    q1s_test, q2s_test, test_q_features = extract_features(test)
-    test_data_1 = pad_sequences(tokenizer.texts_to_sequences(q1s_test), maxlen=MAX_SEQUENCE_LENGTH)
-    test_data_2 = pad_sequences(tokenizer.texts_to_sequences(q2s_test), maxlen=MAX_SEQUENCE_LENGTH)
-    test_nlp_features = pd.read_csv("data/nlp_features_test.csv")
-    #test_non_nlp_features = pd.read_csv("data/non_nlp_features_no_graph_test.csv")
-    
-    #features_test = np.hstack((test_q_features, test_nlp_features, test_non_nlp_features))
-    features_test = np.hstack((test_q_features, test_nlp_features))
-    
+    #features_train = np.hstack((train_q_features, train_nlp_features))
+    features_train = np.hstack((train_q_features, train_nlp_features,pos,lsa))
     
     skf = StratifiedKFold(n_splits=NUM_FOLDS, shuffle=True)
     model_count = 0
     
+    shuffle=  np.random.permutation(data_1.shape[0])
+    split = int( data_1.shape[0] * .8 )
+
+    idx_train = shuffle[:split]
+    idx_val = shuffle[split:]
+
+    print("MODEL:", model_count)
+    data_1_train = data_1[idx_train]
+    data_2_train = data_2[idx_train]
+    labels_train = labels[idx_train]
+    f_train = features_train[idx_train]
     
-    for idx_train, idx_val in skf.split(train["is_duplicate"], train["is_duplicate"]):
-
-        print("MODEL:", model_count)
-        data_1_train = data_1[idx_train]
-        data_2_train = data_2[idx_train]
-        labels_train = labels[idx_train]
-        f_train = features_train[idx_train]
-        
-        data_1_val = data_1[idx_val]
-        data_2_val = data_2[idx_val]
-        labels_val = labels[idx_val]
-        f_val = features_train[idx_val]
-        
-        model = question_model(nb_words,embedding_matrix , f_train.shape[1])
-        
-        best_model_path = "best_model_no_graph" + str(model_count) + ".h5"
-        
-        model_checkpoint = ModelCheckpoint(best_model_path, save_best_only=True, save_weights_only=True)
-        
-        early_stopping = EarlyStopping(monitor="val_loss", patience=5)
-
-        hist = model.fit([data_1_train, data_2_train, f_train], labels_train,
-            validation_data=([data_1_val, data_2_val, f_val], labels_val),
-            epochs=15, batch_size=BATCH_SIZE, shuffle=True,
-            callbacks=[early_stopping, model_checkpoint], verbose=1)
-        
-        #model.load_weights(best_model_path)
-        print(model_count, "validation loss:", min(hist.history["val_loss"]))
-        
-        preds = model.predict([test_data_1, test_data_2, features_test], batch_size=BATCH_SIZE, verbose=1)
-        
-        #submission = pd.DataFrame({"test_id": test["test_id"], "is_duplicate": preds.ravel()})
-        #submission.to_csv("predictions/preds_no_graph" + str(model_count) + ".csv", index=False)
-        
-        model_count += 1
+    data_1_val = data_1[idx_val]
+    data_2_val = data_2[idx_val]
+    labels_val = labels[idx_val]
+    f_val = features_train[idx_val]
+    
+    model = question_model(nb_words,embedding_matrix , f_train.shape[1])
+    
+    best_model_path = "best_model_no_graph" + str(model_count) + ".h5"
+    
+    model_checkpoint = ModelCheckpoint(best_model_path, save_best_only=True, save_weights_only=True)
+    
+    early_stopping = EarlyStopping(monitor="val_loss", patience=5)
+    
+    hist = model.fit([data_1_train, data_2_train, f_train], labels_train,
+        validation_data=([data_1_val, data_2_val, f_val], labels_val),
+        epochs=15, batch_size=BATCH_SIZE, shuffle=True,
+        callbacks=[early_stopping, model_checkpoint], verbose=1)
+    
+    #model.load_weights(best_model_path)
+    print(model_count, "validation loss:", min(hist.history["val_loss"]))
+    
+    #preds = model.predict([test_data_1, test_data_2, features_test], batch_size=BATCH_SIZE, verbose=1)
+    #submission = pd.DataFrame({"test_id": test["test_id"], "is_duplicate": preds.ravel()})
+    #submission.to_csv("predictions/preds_no_graph" + str(model_count) + ".csv", index=False)
+    
+    model_count += 1
         

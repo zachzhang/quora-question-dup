@@ -14,6 +14,6 @@ module swap python/intel  python3/intel/3.5.3
 module load scikit-learn/intel/0.18.1
 module load tensorflow/python3.5/1.1.0 
 
-cd /home/zz1409/Quora/question-answer
+cd /home/zz1409/Quora/quora-question-dup
 
 python3 train.py
