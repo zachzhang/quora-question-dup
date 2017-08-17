@@ -27,6 +27,7 @@ import nltk
 from scipy import sparse
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import TruncatedSVD
+from pytorch_model import *
 
 
 np.random.seed(0)
@@ -355,25 +356,87 @@ if __name__=='__main__':
     labels_val = labels[idx_val]
     f_val = features_train[idx_val]
     
-    model = question_model(nb_words,embedding_matrix , f_train.shape[1])
+    #model = question_model(nb_words,embedding_matrix , f_train.shape[1])
+    model = QuestionModel(torch.from_numpy(embedding_matrix) ,True,   f_train.shape[1])
     
-    best_model_path = "best_model_no_graph" + str(model_count) + ".h5"
+    if gpu:
+        model = model.cuda()
+
+    opt = optim.Adam(model.params, lr=0.001)
+    criterion  =nn.BCELoss()
+
+    train_batches = data_1_train.shape[0] / 64
+    test_batches = data_1_val.shape[0] / 64
+
+    def train():
+
+        avg_loss =0
+        accuracy =0
+        i = 0
+
+
+        #for batch in iter(train_iter):
+
+        for z in range(train_batches):
+
+            q1 = Variable(torch.from_numpy(data_1_train[ z*64:(z+1)*64 ])).long()
+            q2 = Variable(torch.from_numpy(data_2_train[ z*64:(z+1)*64 ])).long()
+            f = Variable(torch.from_numpy(f_train[ z*64:(z+1)*64 ])).float()
+            target = Variable(torch.from_numpy(labels_train[ z*64:(z+1)*64 ])).long()
     
-    model_checkpoint = ModelCheckpoint(best_model_path, save_best_only=True, save_weights_only=True)
-    
-    early_stopping = EarlyStopping(monitor="val_loss", patience=5)
-    
-    hist = model.fit([data_1_train, data_2_train, f_train], labels_train,
-        validation_data=([data_1_val, data_2_val, f_val], labels_val),
-        epochs=15, batch_size=BATCH_SIZE, shuffle=True,
-        callbacks=[early_stopping, model_checkpoint], verbose=1)
-    
-    #model.load_weights(best_model_path)
-    print(model_count, "validation loss:", min(hist.history["val_loss"]))
-    
-    #preds = model.predict([test_data_1, test_data_2, features_test], batch_size=BATCH_SIZE, verbose=1)
-    #submission = pd.DataFrame({"test_id": test["test_id"], "is_duplicate": preds.ravel()})
-    #submission.to_csv("predictions/preds_no_graph" + str(model_count) + ".csv", index=False)
-    
-    model_count += 1
-        
+            if gpu:
+                data , target = data.cuda(), target.cuda()
+
+            opt.zero_grad()
+
+            y_hat = model(q1,q2,f)
+
+            loss = criterion(y_hat,target)
+            loss.backward()
+
+            opt.step()
+
+            avg_loss += loss.data[0]
+
+            acc =  ( y_hat.cpu().data.numpy() > .5) == target.cpu().data.numpy() ).mean()
+            accuracy += acc
+            i+=1
+
+        print("TRAINING loss: ", (avg_loss / i)," TRAINING Accuracy:  " , accuracy / i)
+
+    def test():
+
+        avg_loss =0
+        accuracy =0
+        i = 0
+
+
+        for z in range(test_batches):
+
+            q1 = Variable(torch.from_numpy(data_1_val[ z*64:(z+1)*64 ])).long()
+            q2 = Variable(torch.from_numpy(data_2_val[ z*64:(z+1)*64 ])).long()
+            f = Variable(torch.from_numpy(f_val[ z*64:(z+1)*64 ])).float()
+            target = Variable(torch.from_numpy(labels_val[ z*64:(z+1)*64 ])).long()
+
+
+            if gpu:
+                data , target = data.cuda(), target.cuda()
+                q1,q2,f = 
+            opt.zero_grad()
+
+            y_hat = model(q1,q2,f)
+
+            loss = criterion(y_hat,target)
+            loss.backward()
+
+            opt.step()
+
+            avg_loss += loss.data[0]
+
+            acc =  ( y_hat.cpu().data.numpy() > .5) == target.cpu().data.numpy() ).mean()
+            accuracy += acc
+            i+=1
+
+        print("TESTING loss: ", (avg_loss / i)," TESTING Accuracy:  " , accuracy / i)
+
+
